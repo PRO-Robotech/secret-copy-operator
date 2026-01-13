@@ -13,6 +13,7 @@
 | Аннотация | По умолчанию | Описание |
 |-----------|--------------|----------|
 | `secret-copy.in-cloud.io/dstNamespace` | Namespace исходного секрета | Целевой namespace в удалённом кластере |
+| `secret-copy.in-cloud.io/dstType` | Тип исходного секрета | Тип секрета в целевом кластере (`Opaque`, `kubernetes.io/tls`, и др.) |
 | `strategy.secret-copy.in-cloud.io/ifExist` | `overwrite` | Стратегия при существовании секрета: `overwrite` или `ignore` |
 
 ### Маппинг полей
@@ -37,6 +38,42 @@ annotations:
 ```
 
 **Важно:** Если указан хотя бы один маппинг полей, копируются ТОЛЬКО указанные поля.
+
+### Переопределение типа секрета
+
+Аннотация `secret-copy.in-cloud.io/dstType` позволяет изменить тип секрета при копировании. Это полезно при использовании маппинга полей с типизированными секретами.
+
+**Проблема:** Секреты типа `kubernetes.io/tls` требуют наличия ключей `tls.crt` и `tls.key`. При маппинге полей эти ключи могут отсутствовать, и Kubernetes API отклонит секрет.
+
+**Решение:** Переопределить тип на `Opaque`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-tls-cert
+  labels:
+    secret-copy.in-cloud.io: "true"
+  annotations:
+    secret-copy.in-cloud.io/dstClusterKubeconfig: "clusters/workload"
+    secret-copy.in-cloud.io/dstType: "Opaque"                      # Переопределяем тип
+    fields.secret-copy.in-cloud.io/tls.crt: "certificate"          # tls.crt → certificate
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUd...
+  tls.key: LS0tLS1CRUd...
+```
+
+Результат в целевом кластере:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-tls-cert
+type: Opaque           # Тип переопределён
+data:
+  certificate: LS0tLS1CRUd...  # Только замапленное поле
+```
 
 ## Лейблы
 

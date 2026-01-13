@@ -29,6 +29,7 @@ type CopyConfig struct {
 	DstKubeconfigRef types.NamespacedName
 	DstNamespace     string
 	DstSecretName    string
+	DstType          corev1.SecretType // empty means use source type
 	Strategy         Strategy
 	FieldsMapping    map[string]string // srcKey -> dstKey
 }
@@ -80,6 +81,7 @@ func parseConfig(secret *corev1.Secret) (*CopyConfig, error) {
 		},
 		DstNamespace:  dstNamespace,
 		DstSecretName: secret.Name,
+		DstType:       corev1.SecretType(annotations[AnnotationDstType]),
 		Strategy:      strategy,
 		FieldsMapping: fieldsMapping,
 	}, nil

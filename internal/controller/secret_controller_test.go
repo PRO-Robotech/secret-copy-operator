@@ -254,6 +254,39 @@ var _ = Describe("SecretCopyReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(config.Strategy).To(Equal(StrategyIgnore))
 		})
+
+		It("should parse dstType annotation", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationDstKubeconfig: "ns/kubeconfig",
+						AnnotationDstType:       "Opaque",
+					},
+				},
+			}
+
+			config, err := parseConfig(secret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(config.DstType).To(Equal(corev1.SecretTypeOpaque))
+		})
+
+		It("should have empty dstType when not specified", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-secret",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationDstKubeconfig: "ns/kubeconfig",
+					},
+				},
+			}
+
+			config, err := parseConfig(secret)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(config.DstType).To(BeEmpty())
+		})
 	})
 
 	Describe("prepareData", func() {
@@ -315,6 +348,29 @@ var _ = Describe("SecretCopyReconciler", func() {
 			Expect(result).To(HaveLen(1))
 			Expect(result["newKey"]).To(Equal([]byte("value")))
 			Expect(result).NotTo(HaveKey("anotherKey"))
+		})
+	})
+
+	Describe("resolveSecretType", func() {
+		var reconciler *SecretCopyReconciler
+
+		BeforeEach(func() {
+			reconciler = &SecretCopyReconciler{}
+		})
+
+		It("should return dstType when specified", func() {
+			result := reconciler.resolveSecretType(corev1.SecretTypeTLS, corev1.SecretTypeOpaque)
+			Expect(result).To(Equal(corev1.SecretTypeOpaque))
+		})
+
+		It("should return sourceType when dstType is empty", func() {
+			result := reconciler.resolveSecretType(corev1.SecretTypeTLS, "")
+			Expect(result).To(Equal(corev1.SecretTypeTLS))
+		})
+
+		It("should handle custom secret types", func() {
+			result := reconciler.resolveSecretType(corev1.SecretTypeTLS, "my-custom-type")
+			Expect(result).To(Equal(corev1.SecretType("my-custom-type")))
 		})
 	})
 

@@ -27,6 +27,8 @@ const (
 	AnnotationDstKubeconfig = "secret-copy.in-cloud.io/dstClusterKubeconfig"
 	// AnnotationDstNamespace specifies the target namespace (defaults to source namespace)
 	AnnotationDstNamespace = "secret-copy.in-cloud.io/dstNamespace"
+	// AnnotationDstType specifies the target secret type (defaults to source type)
+	AnnotationDstType = "secret-copy.in-cloud.io/dstType"
 	// AnnotationStrategyIfExist specifies behavior when secret exists: "overwrite" or "ignore"
 	AnnotationStrategyIfExist = "strategy.secret-copy.in-cloud.io/ifExist"
 	// AnnotationFieldsPrefix is the prefix for field mapping annotations

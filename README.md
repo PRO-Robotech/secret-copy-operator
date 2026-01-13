@@ -71,6 +71,7 @@ data:
 |-----------|--------------|----------|
 | `secret-copy.in-cloud.io/dstClusterKubeconfig` | Да | Ссылка на секрет с kubeconfig (`namespace/name`) |
 | `secret-copy.in-cloud.io/dstNamespace` | Нет | Целевой namespace (по умолчанию — исходный) |
+| `secret-copy.in-cloud.io/dstType` | Нет | Тип секрета в целевом кластере (по умолчанию — тип исходного) |
 | `strategy.secret-copy.in-cloud.io/ifExist` | Нет | `overwrite` (по умолчанию) или `ignore` |
 | `fields.secret-copy.in-cloud.io/<srcKey>` | Нет | Маппинг исходного ключа на целевой |
 

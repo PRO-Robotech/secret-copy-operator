@@ -142,9 +142,11 @@ func (r *SecretCopyReconciler) copySecret(
 	}
 
 	data := r.prepareData(source.Data, config.FieldsMapping)
+	secretType := r.resolveSecretType(source.Type, config.DstType)
+
 	if secretExists {
 		existing.Data = data
-		existing.Type = source.Type
+		existing.Type = secretType
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string)
 		}
@@ -163,7 +165,7 @@ func (r *SecretCopyReconciler) copySecret(
 			Labels:      r.filterLabels(source.Labels),
 			Annotations: annotations,
 		},
-		Type: source.Type,
+		Type: secretType,
 		Data: data,
 	}
 
@@ -175,6 +177,14 @@ func (r *SecretCopyReconciler) setCopyAnnotations(annotations map[string]string,
 	annotations["secret-copy.in-cloud.io/sourceCluster"] = r.ClusterName
 	annotations["secret-copy.in-cloud.io/sourceSecret"] = source.Namespace + "/" + source.Name
 	annotations["secret-copy.in-cloud.io/copiedAt"] = time.Now().UTC().Format(time.RFC3339)
+}
+
+// resolveSecretType returns dstType if set, otherwise uses sourceType
+func (r *SecretCopyReconciler) resolveSecretType(sourceType, dstType corev1.SecretType) corev1.SecretType {
+	if dstType != "" {
+		return dstType
+	}
+	return sourceType
 }
 
 // prepareData prepares data considering field mapping
