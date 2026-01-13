@@ -33,14 +33,17 @@ const (
 	AnnotationFieldsPrefix = "fields.secret-copy.in-cloud.io/"
 )
 
+// AnnotationStatusPrefix is the prefix for all status annotations (used for filtering updates)
+const AnnotationStatusPrefix = "status.secret-copy.in-cloud.io/"
+
 // Status annotation keys
-const (
+var (
 	// AnnotationLastSyncTime stores the last sync timestamp in RFC3339 format
-	AnnotationLastSyncTime = "status.secret-copy.in-cloud.io/lastSyncTime"
+	AnnotationLastSyncTime = AnnotationStatusPrefix + "lastSyncTime"
 	// AnnotationLastSyncStatus stores the sync status (Synced or Error: message)
-	AnnotationLastSyncStatus = "status.secret-copy.in-cloud.io/lastSyncStatus"
+	AnnotationLastSyncStatus = AnnotationStatusPrefix + "lastSyncStatus"
 	// AnnotationRetryCount stores the current retry count for exponential backoff
-	AnnotationRetryCount = "status.secret-copy.in-cloud.io/retryCount"
+	AnnotationRetryCount = AnnotationStatusPrefix + "retryCount"
 )
 
 // Status values for AnnotationLastSyncStatus

@@ -902,4 +902,102 @@ var _ = Describe("SecretCopyReconciler", func() {
 			Expect(updatedSecret.Annotations[AnnotationLastSyncStatus]).To(Equal(StatusSynced))
 		})
 	})
+
+	Describe("filterStatusAnnotations", func() {
+		It("should remove status annotations", func() {
+			annotations := map[string]string{
+				AnnotationDstKubeconfig:  "ns/secret",
+				AnnotationLastSyncStatus: "Synced",
+				AnnotationRetryCount:     "5",
+				"custom-annotation":      "value",
+			}
+			result := filterStatusAnnotations(annotations)
+			Expect(result).To(HaveLen(2))
+			Expect(result).To(HaveKey(AnnotationDstKubeconfig))
+			Expect(result).To(HaveKey("custom-annotation"))
+			Expect(result).NotTo(HaveKey(AnnotationLastSyncStatus))
+			Expect(result).NotTo(HaveKey(AnnotationRetryCount))
+		})
+
+		It("should handle nil annotations", func() {
+			Expect(filterStatusAnnotations(nil)).To(BeNil())
+		})
+
+		It("should handle empty annotations", func() {
+			result := filterStatusAnnotations(map[string]string{})
+			Expect(result).To(BeEmpty())
+		})
+	})
+
+	Describe("secretSpecChanged", func() {
+		It("should return false when only status annotations changed", func() {
+			oldSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDstKubeconfig: "ns/secret",
+						AnnotationRetryCount:    "1",
+					},
+				},
+				Data: map[string][]byte{"key": []byte("value")},
+			}
+			newSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDstKubeconfig:  "ns/secret",
+						AnnotationRetryCount:     "2",
+						AnnotationLastSyncStatus: "Error: something",
+					},
+				},
+				Data: map[string][]byte{"key": []byte("value")},
+			}
+			Expect(secretSpecChanged(oldSecret, newSecret)).To(BeFalse())
+		})
+
+		It("should return true when data changed", func() {
+			oldSecret := &corev1.Secret{
+				Data: map[string][]byte{"key": []byte("old")},
+			}
+			newSecret := &corev1.Secret{
+				Data: map[string][]byte{"key": []byte("new")},
+			}
+			Expect(secretSpecChanged(oldSecret, newSecret)).To(BeTrue())
+		})
+
+		It("should return true when labels changed", func() {
+			oldSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"env": "dev"},
+				},
+			}
+			newSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"env": "prod"},
+				},
+			}
+			Expect(secretSpecChanged(oldSecret, newSecret)).To(BeTrue())
+		})
+
+		It("should return true when config annotations changed", func() {
+			oldSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDstNamespace: "ns1",
+					},
+				},
+			}
+			newSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						AnnotationDstNamespace: "ns2",
+					},
+				},
+			}
+			Expect(secretSpecChanged(oldSecret, newSecret)).To(BeTrue())
+		})
+
+		It("should return true for non-secret objects", func() {
+			// Safe default: if we can't cast to Secret, trigger reconcile
+			Expect(secretSpecChanged(nil, nil)).To(BeTrue())
+		})
+	})
 })

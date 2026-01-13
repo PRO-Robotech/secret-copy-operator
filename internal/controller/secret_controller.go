@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -235,6 +236,42 @@ func (r *SecretCopyReconciler) updateStatusWithRetry(ctx context.Context, secret
 	return delay, r.Patch(ctx, secret, patch)
 }
 
+// filterStatusAnnotations returns annotations without status.secret-copy.in-cloud.io/* keys
+func filterStatusAnnotations(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return nil
+	}
+	result := make(map[string]string, len(annotations))
+	for k, v := range annotations {
+		if !strings.HasPrefix(k, AnnotationStatusPrefix) {
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// secretSpecChanged returns true if secret data, labels, or config annotations changed
+func secretSpecChanged(oldObj, newObj client.Object) bool {
+	oldSecret, ok1 := oldObj.(*corev1.Secret)
+	newSecret, ok2 := newObj.(*corev1.Secret)
+	if !ok1 || !ok2 {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldSecret.Data, newSecret.Data) {
+		return true
+	}
+
+	if !reflect.DeepEqual(oldSecret.Labels, newSecret.Labels) {
+		return true
+	}
+
+	// Compare annotations (excluding status.*)
+	oldAnnotations := filterStatusAnnotations(oldSecret.Annotations)
+	newAnnotations := filterStatusAnnotations(newSecret.Annotations)
+	return !reflect.DeepEqual(oldAnnotations, newAnnotations)
+}
+
 // SetupWithManager sets up the controller with the Manager
 func (r *SecretCopyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	selector, err := labels.Parse(LabelEnabled + "=true")
@@ -252,7 +289,11 @@ func (r *SecretCopyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return selector.Matches(labels.Set(e.Object.GetLabels()))
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				return selector.Matches(labels.Set(e.ObjectNew.GetLabels()))
+				if !selector.Matches(labels.Set(e.ObjectNew.GetLabels())) {
+					return false
+				}
+				// Ignore status-only updates to prevent reconcile loop
+				return secretSpecChanged(e.ObjectOld, e.ObjectNew)
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
 				return false
