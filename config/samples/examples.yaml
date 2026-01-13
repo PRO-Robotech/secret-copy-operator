@@ -1,0 +1,120 @@
+# =============================================================================
+# Kubeconfig secret for target cluster
+# =============================================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: workload-cluster-kubeconfig
+  namespace: clusters
+type: Opaque
+stringData:
+  kubeconfig: |
+    apiVersion: v1
+    kind: Config
+    clusters:
+    - cluster:
+        server: https://workload.example.com:6443
+        certificate-authority-data: LS0tLS1CRUdJTi...
+      name: workload
+    contexts:
+    - context:
+        cluster: workload
+        user: admin
+      name: workload
+    current-context: workload
+    users:
+    - name: admin
+      user:
+        token: eyJhbGciOiJSUzI1NiIs...
+
+# =============================================================================
+# Example 1: Copy entire secret
+# =============================================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wildcard-tls
+  namespace: cert-manager
+  labels:
+    secret-copy.in-cloud.io: "true"
+  annotations:
+    # Reference to kubeconfig: namespace/secret-name
+    secret-copy.in-cloud.io/dstClusterKubeconfig: "clusters/workload-cluster-kubeconfig"
+    # Target namespace
+    secret-copy.in-cloud.io/dstNamespace: "beget-system"
+    # Strategy: overwrite (default) or ignore
+    strategy.secret-copy.in-cloud.io/ifExist: "overwrite"
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTi...
+  tls.key: LS0tLS1CRUdJTi...
+  ca.crt: LS0tLS1CRUdJTi...
+
+# =============================================================================
+# Example 2: Copy only specific fields
+# =============================================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: full-tls-bundle
+  namespace: cert-manager
+  labels:
+    secret-copy.in-cloud.io: "true"
+  annotations:
+    secret-copy.in-cloud.io/dstClusterKubeconfig: "clusters/workload-cluster-kubeconfig"
+    secret-copy.in-cloud.io/dstNamespace: "ingress-nginx"
+    # Copy only tls.crt and tls.key, ignore ca.crt
+    fields.secret-copy.in-cloud.io/tls.crt: "tls.crt"
+    fields.secret-copy.in-cloud.io/tls.key: "tls.key"
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTi...
+  tls.key: LS0tLS1CRUdJTi...
+  ca.crt: LS0tLS1CRUdJTi...  # this field will NOT be copied
+
+# =============================================================================
+# Example 3: Copy with field renaming
+# =============================================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: database-credentials
+  namespace: secrets
+  labels:
+    secret-copy.in-cloud.io: "true"
+  annotations:
+    secret-copy.in-cloud.io/dstClusterKubeconfig: "clusters/workload-cluster-kubeconfig"
+    secret-copy.in-cloud.io/dstNamespace: "app"
+    # Rename fields during copy
+    fields.secret-copy.in-cloud.io/pg-user: "username"      # pg-user -> username
+    fields.secret-copy.in-cloud.io/pg-password: "password"  # pg-password -> password
+    fields.secret-copy.in-cloud.io/pg-host: "host"          # pg-host -> host
+type: Opaque
+data:
+  pg-user: YWRtaW4=
+  pg-password: c2VjcmV0MTIz
+  pg-host: ZGIuZXhhbXBsZS5jb20=
+
+# =============================================================================
+# Example 4: Strategy ignore - don't overwrite existing
+# =============================================================================
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: initial-config
+  namespace: setup
+  labels:
+    secret-copy.in-cloud.io: "true"
+  annotations:
+    secret-copy.in-cloud.io/dstClusterKubeconfig: "clusters/workload-cluster-kubeconfig"
+    secret-copy.in-cloud.io/dstNamespace: "app"
+    # If secret exists - skip it
+    strategy.secret-copy.in-cloud.io/ifExist: "ignore"
+type: Opaque
+data:
+  config.yaml: Y29uZmlnOiB2YWx1ZQ==
