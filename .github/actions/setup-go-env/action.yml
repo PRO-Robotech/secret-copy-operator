@@ -1,0 +1,21 @@
+name: 'Setup Go Environment'
+description: 'Setup Go with module and build caching'
+
+inputs:
+  go-version-file:
+    description: 'Path to go.mod file for version detection'
+    required: false
+    default: 'go.mod'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: true
+
+    - name: Download dependencies
+      shell: bash
+      run: go mod download
