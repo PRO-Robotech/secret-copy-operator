@@ -147,15 +147,24 @@ func (r *SecretCopyReconciler) copySecret(
 	if secretExists {
 		existing.Data = data
 		existing.Type = secretType
+
+		// Merge filtered source annotations into existing
+		filteredAnnotations := filterAnnotationsForCopy(source.Annotations)
 		if existing.Annotations == nil {
 			existing.Annotations = make(map[string]string)
+		}
+		for k, v := range filteredAnnotations {
+			existing.Annotations[k] = v
 		}
 		r.setCopyAnnotations(existing.Annotations, source)
 
 		return targetClient.Update(ctx, existing)
 	}
 
-	annotations := make(map[string]string)
+	annotations := filterAnnotationsForCopy(source.Annotations)
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
 	r.setCopyAnnotations(annotations, source)
 
 	newSecret := &corev1.Secret{
@@ -215,6 +224,32 @@ func (r *SecretCopyReconciler) filterLabels(lbls map[string]string) map[string]s
 	result := make(map[string]string)
 	for k, v := range lbls {
 		if !strings.Contains(k, LabelEnabled) {
+			result[k] = v
+		}
+	}
+
+	return result
+}
+
+// filterAnnotationsForCopy removes operator and tooling annotations from source.
+// Preserves user annotations, filters out operator config/status and kubectl/argocd metadata.
+func filterAnnotationsForCopy(annotations map[string]string) map[string]string {
+	if annotations == nil {
+		return nil
+	}
+
+	result := make(map[string]string, len(annotations))
+	for k, v := range annotations {
+		shouldFilter := false
+
+		for _, prefix := range AnnotationPrefixesToFilter {
+			if strings.HasPrefix(k, prefix) {
+				shouldFilter = true
+				break
+			}
+		}
+
+		if !shouldFilter {
 			result[k] = v
 		}
 	}

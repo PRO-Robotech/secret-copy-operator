@@ -55,3 +55,13 @@ const (
 	// StatusErrorPrefix is prepended to error messages in status
 	StatusErrorPrefix = "Error: "
 )
+
+// AnnotationPrefixesToFilter contains annotation prefixes that should not be copied to the target secret.
+var AnnotationPrefixesToFilter = []string{
+	"secret-copy.in-cloud.io/",
+	"status.secret-copy.in-cloud.io/",
+	"strategy.secret-copy.in-cloud.io/",
+	"fields.secret-copy.in-cloud.io/",
+	"argocd.argoproj.io/tracking-id",
+	"kubectl.kubernetes.io/last-applied-configuration",
+}
