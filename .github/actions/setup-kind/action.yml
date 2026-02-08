@@ -1,0 +1,50 @@
+name: 'Setup Kind'
+description: 'Install Kind CLI and optionally create a cluster'
+
+inputs:
+  version:
+    description: 'Kind version (e.g., v0.25.0). Use "latest" for latest version'
+    required: false
+    default: 'latest'
+  cluster-name:
+    description: 'Name of the Kind cluster to create'
+    required: false
+    default: 'kind'
+  create-cluster:
+    description: 'Whether to create a cluster after installation'
+    required: false
+    default: 'true'
+  wait:
+    description: 'Wait timeout for cluster to be ready'
+    required: false
+    default: '60s'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Kind
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          VERSION=$(curl -s https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        fi
+        curl -Lo ./kind "https://kind.sigs.k8s.io/dl/${VERSION}/kind-linux-amd64"
+        chmod +x ./kind
+        sudo mv ./kind /usr/local/bin/kind
+
+    - name: Verify Kind installation
+      shell: bash
+      run: kind version
+
+    - name: Create Kind cluster
+      if: ${{ inputs.create-cluster == 'true' }}
+      shell: bash
+      run: |
+        kind create cluster --name ${{ inputs.cluster-name }} --wait ${{ inputs.wait }}
+
+    - name: Set kubectl context
+      if: ${{ inputs.create-cluster == 'true' }}
+      shell: bash
+      run: |
+        kubectl cluster-info --context kind-${{ inputs.cluster-name }}

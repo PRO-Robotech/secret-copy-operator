@@ -1,0 +1,25 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-e2e:
+    name: Run on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: ./.github/actions/setup-go-env
+
+      - name: Setup Kind
+        uses: ./.github/actions/setup-kind
+        with:
+          create-cluster: 'false'
+
+      - name: Run E2E tests
+        run: make test-e2e
