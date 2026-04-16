@@ -28,13 +28,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ClusterManager manages connections to remote clusters with caching
+const (
+	// Caps time per remote API call. A dead target cluster otherwise hangs the
+	// reconciler worker for the default 30s TCP connect timeout.
+	defaultRequestTimeout = 10 * time.Second
+
+	healthBackoffInitial = 15 * time.Second
+	healthBackoffMax     = 15 * time.Minute
+)
+
+// ClusterManager manages connections to remote clusters with caching and
+// per-cluster failure backoff.
 type ClusterManager struct {
 	mu                      sync.RWMutex
 	clients                 map[string]*cachedClient
+	health                  map[string]*healthState
 	ttl                     time.Duration
 	scheme                  *runtime.Scheme
 	maxConcurrentReconciles int
+	now                     func() time.Time
 }
 
 type cachedClient struct {
@@ -43,13 +55,20 @@ type cachedClient struct {
 	createdAt      time.Time
 }
 
+type healthState struct {
+	consecutiveFailures int
+	openUntil           time.Time
+}
+
 // NewClusterManager creates a new ClusterManager
 func NewClusterManager(ttl time.Duration, scheme *runtime.Scheme, maxConcurrentReconciles int) *ClusterManager {
 	cm := &ClusterManager{
 		clients:                 make(map[string]*cachedClient),
+		health:                  make(map[string]*healthState),
 		ttl:                     ttl,
 		scheme:                  scheme,
 		maxConcurrentReconciles: maxConcurrentReconciles,
+		now:                     time.Now,
 	}
 	go cm.cleanupLoop()
 	return cm
@@ -93,7 +112,7 @@ func (cm *ClusterManager) GetClient(kubeconfigSecret *corev1.Secret) (client.Cli
 
 	// Configure timeouts and rate limits based on concurrency
 	// Each reconcile does ~4 API calls, multiply by 5 for headroom
-	restConfig.Timeout = 30 * time.Second
+	restConfig.Timeout = defaultRequestTimeout
 	restConfig.QPS = float32(cm.maxConcurrentReconciles * 5)
 	restConfig.Burst = cm.maxConcurrentReconciles * 10
 
@@ -125,6 +144,63 @@ func (cm *ClusterManager) getKubeconfigFromSecret(secret *corev1.Secret) []byte 
 func (cm *ClusterManager) hashKubeconfig(data []byte) string {
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("%x", h[:8])
+}
+
+// CheckHealth returns (true, 0) if the caller may call the remote cluster,
+// or (false, waitFor) if the cluster is in backoff — requeue after waitFor.
+func (cm *ClusterManager) CheckHealth(cacheKey string) (ok bool, waitFor time.Duration) {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	state, exists := cm.health[cacheKey]
+	if !exists {
+		return true, 0
+	}
+
+	remaining := state.openUntil.Sub(cm.now())
+	if remaining <= 0 {
+		return true, 0
+	}
+
+	return false, remaining
+}
+
+// RecordFailure doubles the backoff for the cluster, up to healthBackoffMax.
+func (cm *ClusterManager) RecordFailure(cacheKey string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	state, exists := cm.health[cacheKey]
+	if !exists {
+		state = &healthState{}
+		cm.health[cacheKey] = state
+	}
+	state.consecutiveFailures++
+	state.openUntil = cm.now().Add(computeHealthBackoff(state.consecutiveFailures))
+}
+
+// RecordSuccess clears the backoff for the cluster.
+func (cm *ClusterManager) RecordSuccess(cacheKey string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	delete(cm.health, cacheKey)
+}
+
+// computeHealthBackoff: 15s, 30s, 1m, 2m, 4m, 8m, 15m (capped).
+func computeHealthBackoff(failures int) time.Duration {
+	if failures < 1 {
+		return healthBackoffInitial
+	}
+	shift := failures - 1
+	if shift > 30 {
+		return healthBackoffMax
+	}
+	d := healthBackoffInitial << shift
+	if d <= 0 || d > healthBackoffMax {
+		return healthBackoffMax
+	}
+
+	return d
 }
 
 // cleanupLoop removes expired clients

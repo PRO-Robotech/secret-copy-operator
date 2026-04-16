@@ -182,4 +182,100 @@ var _ = Describe("ClusterManager", func() {
 		})
 	})
 
+	Describe("per-cluster health tracking", func() {
+		var (
+			cm  *ClusterManager
+			now time.Time
+			key string
+		)
+
+		BeforeEach(func() {
+			cm = &ClusterManager{
+				clients: make(map[string]*cachedClient),
+				health:  make(map[string]*healthState),
+			}
+			now = time.Unix(0, 0)
+			cm.now = func() time.Time { return now }
+			key = "ns/kubeconfig"
+		})
+
+		It("reports healthy when no failures recorded", func() {
+			ok, waitFor := cm.CheckHealth(key)
+			Expect(ok).To(BeTrue())
+			Expect(waitFor).To(Equal(time.Duration(0)))
+		})
+
+		It("doubles backoff on each consecutive failure up to the cap", func() {
+			expectations := []time.Duration{
+				15 * time.Second,
+				30 * time.Second,
+				1 * time.Minute,
+				2 * time.Minute,
+				4 * time.Minute,
+				8 * time.Minute,
+				15 * time.Minute, // would be 16m, capped
+				15 * time.Minute, // stays capped
+			}
+			for i, want := range expectations {
+				cm.RecordFailure(key)
+				ok, waitFor := cm.CheckHealth(key)
+				Expect(ok).To(BeFalse(), "attempt %d must be gated", i+1)
+				Expect(waitFor).To(Equal(want), "attempt %d wrong backoff", i+1)
+			}
+		})
+
+		It("clears backoff on success and resets failure counter", func() {
+			cm.RecordFailure(key)
+			cm.RecordFailure(key)
+
+			ok, _ := cm.CheckHealth(key)
+			Expect(ok).To(BeFalse())
+
+			cm.RecordSuccess(key)
+
+			ok, waitFor := cm.CheckHealth(key)
+			Expect(ok).To(BeTrue())
+			Expect(waitFor).To(Equal(time.Duration(0)))
+
+			// Next failure starts from the initial backoff again.
+			cm.RecordFailure(key)
+			_, waitFor = cm.CheckHealth(key)
+			Expect(waitFor).To(Equal(healthBackoffInitial))
+		})
+
+		It("lets callers through once the backoff elapses", func() {
+			cm.RecordFailure(key)
+
+			now = now.Add(healthBackoffInitial - time.Nanosecond)
+			ok, _ := cm.CheckHealth(key)
+			Expect(ok).To(BeFalse())
+
+			now = now.Add(2 * time.Nanosecond)
+			ok, waitFor := cm.CheckHealth(key)
+			Expect(ok).To(BeTrue())
+			Expect(waitFor).To(Equal(time.Duration(0)))
+		})
+
+		It("tracks backoff independently per cluster key", func() {
+			cm.RecordFailure("cluster-a")
+			ok, _ := cm.CheckHealth("cluster-b")
+			Expect(ok).To(BeTrue(), "unrelated cluster must stay healthy")
+		})
+	})
+
+	Describe("computeHealthBackoff", func() {
+		It("returns the initial backoff for the first failure", func() {
+			Expect(computeHealthBackoff(1)).To(Equal(healthBackoffInitial))
+		})
+		It("doubles per step", func() {
+			Expect(computeHealthBackoff(2)).To(Equal(2 * healthBackoffInitial))
+			Expect(computeHealthBackoff(3)).To(Equal(4 * healthBackoffInitial))
+		})
+		It("caps at healthBackoffMax", func() {
+			Expect(computeHealthBackoff(7)).To(Equal(healthBackoffMax))
+			Expect(computeHealthBackoff(50)).To(Equal(healthBackoffMax))
+			Expect(computeHealthBackoff(1000)).To(Equal(healthBackoffMax))
+		})
+	})
+
 })

@@ -76,6 +76,13 @@ func (r *SecretCopyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		"dstNamespace", config.DstNamespace,
 	)
 
+	targetKey := config.DstKubeconfigRef.Namespace + "/" + config.DstKubeconfigRef.Name
+	if ok, waitFor := r.ClusterClientGetter.CheckHealth(targetKey); !ok {
+		logger.Info("Target cluster in backoff, deferring", "key", targetKey, "waitFor", waitFor)
+		_, _ = r.updateStatusWithRetry(ctx, secret, StatusErrorPrefix+"target in backoff", false)
+		return ctrl.Result{RequeueAfter: waitFor}, nil
+	}
+
 	// Get kubeconfig secret
 	kubeconfigSecret := &corev1.Secret{}
 	if err := r.Get(ctx, config.DstKubeconfigRef, kubeconfigSecret); err != nil {
@@ -93,11 +100,13 @@ func (r *SecretCopyReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if err := r.copySecret(ctx, secret, targetClient, config); err != nil {
+		r.ClusterClientGetter.RecordFailure(targetKey)
 		logger.Error(err, "Failed to copy secret")
 		delay, _ := r.updateStatusWithRetry(ctx, secret, StatusErrorPrefix+err.Error(), true)
 		logger.Info("Scheduling retry", "delay", delay)
 		return ctrl.Result{RequeueAfter: delay}, nil
 	}
+	r.ClusterClientGetter.RecordSuccess(targetKey)
 
 	logger.Info("Secret copied successfully",
 		"dst", config.DstNamespace+"/"+secret.Name,

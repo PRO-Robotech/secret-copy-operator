@@ -17,11 +17,26 @@ limitations under the License.
 package controller
 
 import (
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ClusterClientGetter abstracts cluster client retrieval for testing
+// ClusterClientGetter abstracts cluster client retrieval and per-cluster
+// health tracking for testing.
 type ClusterClientGetter interface {
 	GetClient(kubeconfigSecret *corev1.Secret) (client.Client, error)
+
+	// CheckHealth reports whether remote calls targeting cacheKey should be
+	// attempted. When ok=false, the caller should requeue after waitFor
+	// without issuing any remote calls.
+	CheckHealth(cacheKey string) (ok bool, waitFor time.Duration)
+
+	// RecordFailure records a failed remote call for cacheKey, doubling
+	// the per-cluster backoff up to a cap.
+	RecordFailure(cacheKey string)
+
+	// RecordSuccess clears the backoff for cacheKey.
+	RecordSuccess(cacheKey string)
 }
