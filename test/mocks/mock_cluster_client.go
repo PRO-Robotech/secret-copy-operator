@@ -11,6 +11,7 @@ package mocks
 
 import (
 	reflect "reflect"
+	time "time"
 
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
@@ -41,6 +42,21 @@ func (m *MockClusterClientGetter) EXPECT() *MockClusterClientGetterMockRecorder 
 	return m.recorder
 }
 
+// CheckHealth mocks base method.
+func (m *MockClusterClientGetter) CheckHealth(cacheKey string) (bool, time.Duration) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckHealth", cacheKey)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(time.Duration)
+	return ret0, ret1
+}
+
+// CheckHealth indicates an expected call of CheckHealth.
+func (mr *MockClusterClientGetterMockRecorder) CheckHealth(cacheKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckHealth", reflect.TypeOf((*MockClusterClientGetter)(nil).CheckHealth), cacheKey)
+}
+
 // GetClient mocks base method.
 func (m *MockClusterClientGetter) GetClient(kubeconfigSecret *v1.Secret) (client.Client, error) {
 	m.ctrl.T.Helper()
@@ -54,4 +70,28 @@ func (m *MockClusterClientGetter) GetClient(kubeconfigSecret *v1.Secret) (client
 func (mr *MockClusterClientGetterMockRecorder) GetClient(kubeconfigSecret any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockClusterClientGetter)(nil).GetClient), kubeconfigSecret)
+}
+
+// RecordFailure mocks base method.
+func (m *MockClusterClientGetter) RecordFailure(cacheKey string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RecordFailure", cacheKey)
+}
+
+// RecordFailure indicates an expected call of RecordFailure.
+func (mr *MockClusterClientGetterMockRecorder) RecordFailure(cacheKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordFailure", reflect.TypeOf((*MockClusterClientGetter)(nil).RecordFailure), cacheKey)
+}
+
+// RecordSuccess mocks base method.
+func (m *MockClusterClientGetter) RecordSuccess(cacheKey string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RecordSuccess", cacheKey)
+}
+
+// RecordSuccess indicates an expected call of RecordSuccess.
+func (mr *MockClusterClientGetterMockRecorder) RecordSuccess(cacheKey any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordSuccess", reflect.TypeOf((*MockClusterClientGetter)(nil).RecordSuccess), cacheKey)
 }

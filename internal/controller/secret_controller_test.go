@@ -467,6 +467,13 @@ var _ = Describe("SecretCopyReconciler", func() {
 
 			mockCtrl = gomock.NewController(GinkgoT())
 			mockClusterGetter = mocks.NewMockClusterClientGetter(mockCtrl)
+
+			// Default expectations for per-cluster health tracking. Individual
+			// It-blocks can override these before making assertions.
+			mockClusterGetter.EXPECT().CheckHealth(gomock.Any()).
+				Return(true, time.Duration(0)).AnyTimes()
+			mockClusterGetter.EXPECT().RecordFailure(gomock.Any()).AnyTimes()
+			mockClusterGetter.EXPECT().RecordSuccess(gomock.Any()).AnyTimes()
 		})
 
 		AfterEach(func() {
@@ -957,6 +964,220 @@ var _ = Describe("SecretCopyReconciler", func() {
 			Expect(updatedSecret.Annotations).NotTo(HaveKey(AnnotationRetryCount))
 			Expect(updatedSecret.Annotations[AnnotationLastSyncStatus]).To(Equal(StatusSynced))
 		})
+
+		It("should preserve source annotations when creating secret", func() {
+			// Source secret with user annotations that should be preserved
+			sourceSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-secret",
+					Namespace: "default",
+					Labels: map[string]string{
+						LabelEnabled: "true",
+					},
+					Annotations: map[string]string{
+						// Operator annotations (should NOT be copied)
+						AnnotationDstKubeconfig:   "kube-system/kubeconfig",
+						AnnotationDstNamespace:    "target-ns",
+						AnnotationStrategyIfExist: string(StrategyOverwrite),
+						// ArgoCD tracking-id (should NOT be copied)
+						"argocd.argoproj.io/tracking-id": "app:default/secret",
+						// ArgoCD sync-options (SHOULD be copied - not in filter list)
+						"argocd.argoproj.io/sync-options": "Prune=false",
+						// Kubectl last-applied-configuration (should NOT be copied)
+						"kubectl.kubernetes.io/last-applied-configuration": "{}",
+						// User annotations (SHOULD be copied)
+						"app.kubernetes.io/name":      "myapp",
+						"app.kubernetes.io/component": "backend",
+						"custom-annotation":           "custom-value",
+					},
+				},
+				Data: map[string][]byte{
+					"key": []byte("value"),
+				},
+			}
+
+			kubeconfigSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubeconfig",
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"value": []byte("kubeconfig-data"),
+				},
+			}
+
+			targetNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target-ns",
+				},
+			}
+
+			fakeClient = fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(sourceSecret, kubeconfigSecret).
+				Build()
+
+			fakeTargetClient = fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(targetNamespace).
+				Build()
+
+			mockClusterGetter.EXPECT().
+				GetClient(gomock.Any()).
+				Return(fakeTargetClient, nil)
+
+			reconciler = &SecretCopyReconciler{
+				Client:              fakeClient,
+				Scheme:              scheme,
+				ClusterClientGetter: mockClusterGetter,
+				ClusterName:         "management",
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "my-secret",
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify created secret has user annotations but not operator/tooling annotations
+			createdSecret := &corev1.Secret{}
+			err = fakeTargetClient.Get(ctx, types.NamespacedName{
+				Name:      "my-secret",
+				Namespace: "target-ns",
+			}, createdSecret)
+			Expect(err).NotTo(HaveOccurred())
+
+			// User annotations should be preserved
+			Expect(createdSecret.Annotations).To(HaveKey("app.kubernetes.io/name"))
+			Expect(createdSecret.Annotations["app.kubernetes.io/name"]).To(Equal("myapp"))
+			Expect(createdSecret.Annotations).To(HaveKey("app.kubernetes.io/component"))
+			Expect(createdSecret.Annotations["app.kubernetes.io/component"]).To(Equal("backend"))
+			Expect(createdSecret.Annotations).To(HaveKey("custom-annotation"))
+			Expect(createdSecret.Annotations["custom-annotation"]).To(Equal("custom-value"))
+
+			// ArgoCD sync-options should be preserved (not in filter list)
+			Expect(createdSecret.Annotations).To(HaveKey("argocd.argoproj.io/sync-options"))
+
+			// Copy metadata should be added
+			Expect(createdSecret.Annotations).To(HaveKey("secret-copy.in-cloud.io/sourceCluster"))
+			Expect(createdSecret.Annotations).To(HaveKey("secret-copy.in-cloud.io/sourceSecret"))
+			Expect(createdSecret.Annotations).To(HaveKey("secret-copy.in-cloud.io/copiedAt"))
+
+			// Operator config annotations should NOT be copied
+			Expect(createdSecret.Annotations).NotTo(HaveKey(AnnotationDstKubeconfig))
+			Expect(createdSecret.Annotations).NotTo(HaveKey(AnnotationDstNamespace))
+			Expect(createdSecret.Annotations).NotTo(HaveKey(AnnotationStrategyIfExist))
+
+			// Specific tooling annotations should NOT be copied
+			Expect(createdSecret.Annotations).NotTo(HaveKey("argocd.argoproj.io/tracking-id"))
+			Expect(createdSecret.Annotations).NotTo(HaveKey("kubectl.kubernetes.io/last-applied-configuration"))
+		})
+
+		It("should merge source annotations when updating existing secret", func() {
+			sourceSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-secret",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationDstKubeconfig:   "kube-system/kubeconfig",
+						AnnotationDstNamespace:    "target-ns",
+						AnnotationStrategyIfExist: string(StrategyOverwrite),
+						// User annotations to copy
+						"app.kubernetes.io/name": "myapp",
+						"new-annotation":         "new-value",
+					},
+				},
+				Data: map[string][]byte{
+					"key": []byte("new-value"),
+				},
+			}
+
+			kubeconfigSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "kubeconfig",
+					Namespace: "kube-system",
+				},
+				Data: map[string][]byte{
+					"value": []byte("kubeconfig-data"),
+				},
+			}
+
+			targetNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target-ns",
+				},
+			}
+
+			// Existing secret with its own annotations
+			existingSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-secret",
+					Namespace: "target-ns",
+					Annotations: map[string]string{
+						"existing-annotation":                   "existing-value",
+						"secret-copy.in-cloud.io/sourceCluster": "old-cluster",
+					},
+				},
+				Data: map[string][]byte{
+					"key": []byte("old-value"),
+				},
+			}
+
+			fakeClient = fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(sourceSecret, kubeconfigSecret).
+				Build()
+
+			fakeTargetClient = fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(targetNamespace, existingSecret).
+				Build()
+
+			mockClusterGetter.EXPECT().
+				GetClient(gomock.Any()).
+				Return(fakeTargetClient, nil)
+
+			reconciler = &SecretCopyReconciler{
+				Client:              fakeClient,
+				Scheme:              scheme,
+				ClusterClientGetter: mockClusterGetter,
+				ClusterName:         "management",
+			}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "my-secret",
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify updated secret
+			updatedSecret := &corev1.Secret{}
+			err = fakeTargetClient.Get(ctx, types.NamespacedName{
+				Name:      "my-secret",
+				Namespace: "target-ns",
+			}, updatedSecret)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Data should be updated
+			Expect(updatedSecret.Data["key"]).To(Equal([]byte("new-value")))
+
+			// Existing annotations should be preserved
+			Expect(updatedSecret.Annotations).To(HaveKey("existing-annotation"))
+			Expect(updatedSecret.Annotations["existing-annotation"]).To(Equal("existing-value"))
+
+			// Source user annotations should be merged
+			Expect(updatedSecret.Annotations).To(HaveKey("app.kubernetes.io/name"))
+			Expect(updatedSecret.Annotations["app.kubernetes.io/name"]).To(Equal("myapp"))
+			Expect(updatedSecret.Annotations).To(HaveKey("new-annotation"))
+			Expect(updatedSecret.Annotations["new-annotation"]).To(Equal("new-value"))
+
+			// Copy metadata should be updated
+			Expect(updatedSecret.Annotations["secret-copy.in-cloud.io/sourceCluster"]).To(Equal("management"))
+		})
 	})
 
 	Describe("filterStatusAnnotations", func() {
@@ -982,6 +1203,133 @@ var _ = Describe("SecretCopyReconciler", func() {
 		It("should handle empty annotations", func() {
 			result := filterStatusAnnotations(map[string]string{})
 			Expect(result).To(BeEmpty())
+		})
+	})
+
+	Describe("filterAnnotationsForCopy", func() {
+		It("should remove secret-copy.in-cloud.io/* annotations", func() {
+			annotations := map[string]string{
+				"secret-copy.in-cloud.io/dstClusterKubeconfig": "ns/secret",
+				"secret-copy.in-cloud.io/dstNamespace":         "target-ns",
+				"app.kubernetes.io/name":                       "myapp",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			Expect(result).To(HaveLen(1))
+			Expect(result).To(HaveKey("app.kubernetes.io/name"))
+			Expect(result).NotTo(HaveKey("secret-copy.in-cloud.io/dstClusterKubeconfig"))
+			Expect(result).NotTo(HaveKey("secret-copy.in-cloud.io/dstNamespace"))
+		})
+
+		It("should remove status.secret-copy.in-cloud.io/* annotations", func() {
+			annotations := map[string]string{
+				"status.secret-copy.in-cloud.io/lastSyncTime":   "2024-01-01T00:00:00Z",
+				"status.secret-copy.in-cloud.io/lastSyncStatus": "Synced",
+				"custom-annotation":                             "value",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			Expect(result).To(HaveLen(1))
+			Expect(result).To(HaveKey("custom-annotation"))
+		})
+
+		It("should remove strategy.secret-copy.in-cloud.io/* annotations", func() {
+			annotations := map[string]string{
+				"strategy.secret-copy.in-cloud.io/ifExist": "overwrite",
+				"custom-annotation":                        "value",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			Expect(result).To(HaveLen(1))
+			Expect(result).To(HaveKey("custom-annotation"))
+		})
+
+		It("should remove fields.secret-copy.in-cloud.io/* annotations", func() {
+			annotations := map[string]string{
+				"fields.secret-copy.in-cloud.io/srcKey": "dstKey",
+				"custom-annotation":                     "value",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			Expect(result).To(HaveLen(1))
+			Expect(result).To(HaveKey("custom-annotation"))
+		})
+
+		It("should remove argocd.argoproj.io/tracking-id annotation", func() {
+			annotations := map[string]string{
+				"argocd.argoproj.io/compare-options": "IgnoreExtraneous",
+				"argocd.argoproj.io/sync-options":    "Prune=false",
+				"argocd.argoproj.io/tracking-id":     "app:default/secret",
+				"app.kubernetes.io/managed-by":       "argocd",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			// Only tracking-id is filtered, other argocd annotations are preserved
+			Expect(result).To(HaveLen(3))
+			Expect(result).To(HaveKey("argocd.argoproj.io/compare-options"))
+			Expect(result).To(HaveKey("argocd.argoproj.io/sync-options"))
+			Expect(result).To(HaveKey("app.kubernetes.io/managed-by"))
+			Expect(result).NotTo(HaveKey("argocd.argoproj.io/tracking-id"))
+		})
+
+		It("should remove kubectl.kubernetes.io/last-applied-configuration annotation", func() {
+			annotations := map[string]string{
+				"kubectl.kubernetes.io/last-applied-configuration": `{"apiVersion":"v1"...}`,
+				"kubectl.kubernetes.io/other-annotation":           "value",
+				"custom-annotation":                                "value",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			// Only last-applied-configuration is filtered
+			Expect(result).To(HaveLen(2))
+			Expect(result).To(HaveKey("custom-annotation"))
+			Expect(result).To(HaveKey("kubectl.kubernetes.io/other-annotation"))
+			Expect(result).NotTo(HaveKey("kubectl.kubernetes.io/last-applied-configuration"))
+		})
+
+		It("should preserve user annotations", func() {
+			annotations := map[string]string{
+				"app.kubernetes.io/name":      "myapp",
+				"app.kubernetes.io/component": "backend",
+				"custom.domain.io/annotation": "value",
+				"description":                 "My secret",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			Expect(result).To(HaveLen(4))
+			Expect(result).To(Equal(annotations))
+		})
+
+		It("should handle nil annotations", func() {
+			result := filterAnnotationsForCopy(nil)
+			Expect(result).To(BeNil())
+		})
+
+		It("should handle empty annotations", func() {
+			result := filterAnnotationsForCopy(map[string]string{})
+			Expect(result).To(BeEmpty())
+		})
+
+		It("should filter all operator prefixes at once", func() {
+			annotations := map[string]string{
+				// Operator config
+				"secret-copy.in-cloud.io/dstClusterKubeconfig": "ns/secret",
+				"secret-copy.in-cloud.io/dstNamespace":         "target-ns",
+				// Operator status
+				"status.secret-copy.in-cloud.io/lastSyncTime":   "2024-01-01T00:00:00Z",
+				"status.secret-copy.in-cloud.io/lastSyncStatus": "Synced",
+				// Operator strategy
+				"strategy.secret-copy.in-cloud.io/ifExist": "overwrite",
+				// Operator field mappings
+				"fields.secret-copy.in-cloud.io/key1": "newKey1",
+				// ArgoCD (only tracking-id is filtered)
+				"argocd.argoproj.io/tracking-id":  "app:default/secret",
+				"argocd.argoproj.io/sync-options": "Prune=false",
+				// Kubectl (only last-applied-configuration is filtered)
+				"kubectl.kubernetes.io/last-applied-configuration": "{}",
+				// User annotations that should be preserved
+				"app.kubernetes.io/name": "myapp",
+				"custom-annotation":      "value",
+			}
+			result := filterAnnotationsForCopy(annotations)
+			// 3 preserved: app.kubernetes.io/name, custom-annotation, argocd.argoproj.io/sync-options
+			Expect(result).To(HaveLen(3))
+			Expect(result).To(HaveKey("app.kubernetes.io/name"))
+			Expect(result).To(HaveKey("custom-annotation"))
+			Expect(result).To(HaveKey("argocd.argoproj.io/sync-options"))
 		})
 	})
 
