@@ -63,6 +63,8 @@ func main() {
 	var clientCacheTTL time.Duration
 	var maxConcurrentReconciles int
 	var clusterName string
+	var healthBackoffInitial time.Duration
+	var healthBackoffMax time.Duration
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -87,6 +89,12 @@ func main() {
 		"Maximum number of concurrent reconciles")
 	flag.StringVar(&clusterName, "cluster-name", "system",
 		"Name of this cluster (written to copied secrets as sourceCluster)")
+	flag.DurationVar(&healthBackoffInitial, "health-backoff-initial", controller.DefaultHealthBackoffInitial,
+		"Initial per-cluster health backoff after a failed connection to a target cluster. "+
+			"Doubles on each consecutive failure, capped by --health-backoff-max.")
+	flag.DurationVar(&healthBackoffMax, "health-backoff-max", controller.DefaultHealthBackoffMax,
+		"Maximum per-cluster health backoff. Lower values make the operator recover faster "+
+			"when a target cluster becomes reachable after being down.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -102,6 +110,18 @@ func main() {
 			"value", maxConcurrentReconciles,
 			"min", 1,
 			"max", maxAllowedConcurrentReconciles)
+		os.Exit(1)
+	}
+
+	if healthBackoffInitial <= 0 {
+		setupLog.Error(nil, "invalid --health-backoff-initial: must be positive",
+			"value", healthBackoffInitial)
+		os.Exit(1)
+	}
+	if healthBackoffMax < healthBackoffInitial {
+		setupLog.Error(nil, "invalid --health-backoff-max: must be >= --health-backoff-initial",
+			"health-backoff-max", healthBackoffMax,
+			"health-backoff-initial", healthBackoffInitial)
 		os.Exit(1)
 	}
 
@@ -198,9 +218,15 @@ func main() {
 
 	// Setup SecretCopy controller
 	if err = (&controller.SecretCopyReconciler{
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		ClusterClientGetter:     controller.NewClusterManager(clientCacheTTL, mgr.GetScheme(), maxConcurrentReconciles),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		ClusterClientGetter: controller.NewClusterManager(
+			clientCacheTTL,
+			mgr.GetScheme(),
+			maxConcurrentReconciles,
+			healthBackoffInitial,
+			healthBackoffMax,
+		),
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 		ClusterName:             clusterName,
 	}).SetupWithManager(mgr); err != nil {

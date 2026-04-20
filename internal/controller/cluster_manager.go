@@ -33,8 +33,12 @@ const (
 	// reconciler worker for the default 30s TCP connect timeout.
 	defaultRequestTimeout = 10 * time.Second
 
-	healthBackoffInitial = 15 * time.Second
-	healthBackoffMax     = 15 * time.Minute
+	// DefaultHealthBackoffInitial is the initial delay applied after the first
+	// connection failure to a target cluster. Each subsequent consecutive failure
+	// doubles the delay up to DefaultHealthBackoffMax.
+	DefaultHealthBackoffInitial = 15 * time.Second
+	// DefaultHealthBackoffMax caps the per-cluster health backoff.
+	DefaultHealthBackoffMax = 15 * time.Minute
 )
 
 // ClusterManager manages connections to remote clusters with caching and
@@ -46,6 +50,8 @@ type ClusterManager struct {
 	ttl                     time.Duration
 	scheme                  *runtime.Scheme
 	maxConcurrentReconciles int
+	healthBackoffInitial    time.Duration
+	healthBackoffMax        time.Duration
 	now                     func() time.Time
 }
 
@@ -60,14 +66,31 @@ type healthState struct {
 	openUntil           time.Time
 }
 
-// NewClusterManager creates a new ClusterManager
-func NewClusterManager(ttl time.Duration, scheme *runtime.Scheme, maxConcurrentReconciles int) *ClusterManager {
+// NewClusterManager creates a new ClusterManager.
+// healthBackoffInitial must be > 0; healthBackoffMax must be >= healthBackoffInitial.
+// Values out of range are clamped to the package defaults.
+func NewClusterManager(
+	ttl time.Duration,
+	scheme *runtime.Scheme,
+	maxConcurrentReconciles int,
+	healthBackoffInitial time.Duration,
+	healthBackoffMax time.Duration,
+) *ClusterManager {
+	if healthBackoffInitial <= 0 {
+		healthBackoffInitial = DefaultHealthBackoffInitial
+	}
+	if healthBackoffMax < healthBackoffInitial {
+		healthBackoffMax = healthBackoffInitial
+	}
+
 	cm := &ClusterManager{
 		clients:                 make(map[string]*cachedClient),
 		health:                  make(map[string]*healthState),
 		ttl:                     ttl,
 		scheme:                  scheme,
 		maxConcurrentReconciles: maxConcurrentReconciles,
+		healthBackoffInitial:    healthBackoffInitial,
+		healthBackoffMax:        healthBackoffMax,
 		now:                     time.Now,
 	}
 	go cm.cleanupLoop()
@@ -176,7 +199,7 @@ func (cm *ClusterManager) RecordFailure(cacheKey string) {
 		cm.health[cacheKey] = state
 	}
 	state.consecutiveFailures++
-	state.openUntil = cm.now().Add(computeHealthBackoff(state.consecutiveFailures))
+	state.openUntil = cm.now().Add(cm.computeHealthBackoff(state.consecutiveFailures))
 }
 
 // RecordSuccess clears the backoff for the cluster.
@@ -186,18 +209,19 @@ func (cm *ClusterManager) RecordSuccess(cacheKey string) {
 	delete(cm.health, cacheKey)
 }
 
-// computeHealthBackoff: 15s, 30s, 1m, 2m, 4m, 8m, 15m (capped).
-func computeHealthBackoff(failures int) time.Duration {
+// computeHealthBackoff returns the backoff delay for the given failure count.
+// First failure → healthBackoffInitial; each subsequent failure doubles up to healthBackoffMax.
+func (cm *ClusterManager) computeHealthBackoff(failures int) time.Duration {
 	if failures < 1 {
-		return healthBackoffInitial
+		return cm.healthBackoffInitial
 	}
 	shift := failures - 1
 	if shift > 30 {
-		return healthBackoffMax
+		return cm.healthBackoffMax
 	}
-	d := healthBackoffInitial << shift
-	if d <= 0 || d > healthBackoffMax {
-		return healthBackoffMax
+	d := cm.healthBackoffInitial << shift
+	if d <= 0 || d > cm.healthBackoffMax {
+		return cm.healthBackoffMax
 	}
 
 	return d
