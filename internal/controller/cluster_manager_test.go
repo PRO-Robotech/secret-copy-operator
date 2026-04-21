@@ -123,13 +123,46 @@ var _ = Describe("ClusterManager", func() {
 			ttl := 10 * time.Minute
 			maxConcurrent := 5
 
-			cm := NewClusterManager(ttl, scheme, maxConcurrent)
+			cm := NewClusterManager(ttl, scheme, maxConcurrent, DefaultHealthBackoffInitial, DefaultHealthBackoffMax)
 
 			Expect(cm).NotTo(BeNil())
 			Expect(cm.ttl).To(Equal(ttl))
 			Expect(cm.scheme).To(Equal(scheme))
 			Expect(cm.maxConcurrentReconciles).To(Equal(maxConcurrent))
 			Expect(cm.clients).NotTo(BeNil())
+			Expect(cm.healthBackoffInitial).To(Equal(DefaultHealthBackoffInitial))
+			Expect(cm.healthBackoffMax).To(Equal(DefaultHealthBackoffMax))
+		})
+
+		It("should clamp non-positive initial backoff to the default", func() {
+			// initial=0 → clamped to DefaultHealthBackoffInitial (15s);
+			// max=30s stays as-is because 30s >= 15s after the clamp.
+			cm := NewClusterManager(time.Minute, runtime.NewScheme(), 1, 0, 30*time.Second)
+
+			Expect(cm.healthBackoffInitial).To(Equal(DefaultHealthBackoffInitial))
+			Expect(cm.healthBackoffMax).To(Equal(30 * time.Second))
+		})
+
+		It("should lift max up to initial when max<initial after clamp", func() {
+			// initial=0 → clamped to 15s; max=5s < 15s → lifted to 15s.
+			cm := NewClusterManager(time.Minute, runtime.NewScheme(), 1, 0, 5*time.Second)
+
+			Expect(cm.healthBackoffInitial).To(Equal(DefaultHealthBackoffInitial))
+			Expect(cm.healthBackoffMax).To(Equal(DefaultHealthBackoffInitial))
+		})
+
+		It("should clamp max below initial up to initial", func() {
+			cm := NewClusterManager(time.Minute, runtime.NewScheme(), 1, 30*time.Second, 10*time.Second)
+
+			Expect(cm.healthBackoffInitial).To(Equal(30 * time.Second))
+			Expect(cm.healthBackoffMax).To(Equal(30 * time.Second))
+		})
+
+		It("should respect custom backoff bounds when valid", func() {
+			cm := NewClusterManager(time.Minute, runtime.NewScheme(), 1, 5*time.Second, 1*time.Minute)
+
+			Expect(cm.healthBackoffInitial).To(Equal(5 * time.Second))
+			Expect(cm.healthBackoffMax).To(Equal(1 * time.Minute))
 		})
 	})
 
@@ -191,8 +224,10 @@ var _ = Describe("ClusterManager", func() {
 
 		BeforeEach(func() {
 			cm = &ClusterManager{
-				clients: make(map[string]*cachedClient),
-				health:  make(map[string]*healthState),
+				clients:              make(map[string]*cachedClient),
+				health:               make(map[string]*healthState),
+				healthBackoffInitial: DefaultHealthBackoffInitial,
+				healthBackoffMax:     DefaultHealthBackoffMax,
 			}
 			now = time.Unix(0, 0)
 			cm.now = func() time.Time { return now }
@@ -240,13 +275,13 @@ var _ = Describe("ClusterManager", func() {
 			// Next failure starts from the initial backoff again.
 			cm.RecordFailure(key)
 			_, waitFor = cm.CheckHealth(key)
-			Expect(waitFor).To(Equal(healthBackoffInitial))
+			Expect(waitFor).To(Equal(DefaultHealthBackoffInitial))
 		})
 
 		It("lets callers through once the backoff elapses", func() {
 			cm.RecordFailure(key)
 
-			now = now.Add(healthBackoffInitial - time.Nanosecond)
+			now = now.Add(DefaultHealthBackoffInitial - time.Nanosecond)
 			ok, _ := cm.CheckHealth(key)
 			Expect(ok).To(BeFalse())
 
@@ -264,17 +299,38 @@ var _ = Describe("ClusterManager", func() {
 	})
 
 	Describe("computeHealthBackoff", func() {
+		var cm *ClusterManager
+
+		BeforeEach(func() {
+			cm = &ClusterManager{
+				healthBackoffInitial: DefaultHealthBackoffInitial,
+				healthBackoffMax:     DefaultHealthBackoffMax,
+			}
+		})
+
 		It("returns the initial backoff for the first failure", func() {
-			Expect(computeHealthBackoff(1)).To(Equal(healthBackoffInitial))
+			Expect(cm.computeHealthBackoff(1)).To(Equal(DefaultHealthBackoffInitial))
 		})
 		It("doubles per step", func() {
-			Expect(computeHealthBackoff(2)).To(Equal(2 * healthBackoffInitial))
-			Expect(computeHealthBackoff(3)).To(Equal(4 * healthBackoffInitial))
+			Expect(cm.computeHealthBackoff(2)).To(Equal(2 * DefaultHealthBackoffInitial))
+			Expect(cm.computeHealthBackoff(3)).To(Equal(4 * DefaultHealthBackoffInitial))
 		})
 		It("caps at healthBackoffMax", func() {
-			Expect(computeHealthBackoff(7)).To(Equal(healthBackoffMax))
-			Expect(computeHealthBackoff(50)).To(Equal(healthBackoffMax))
-			Expect(computeHealthBackoff(1000)).To(Equal(healthBackoffMax))
+			Expect(cm.computeHealthBackoff(7)).To(Equal(DefaultHealthBackoffMax))
+			Expect(cm.computeHealthBackoff(50)).To(Equal(DefaultHealthBackoffMax))
+			Expect(cm.computeHealthBackoff(1000)).To(Equal(DefaultHealthBackoffMax))
+		})
+
+		It("honors custom bounds set on the manager", func() {
+			custom := &ClusterManager{
+				healthBackoffInitial: 5 * time.Second,
+				healthBackoffMax:     30 * time.Second,
+			}
+			Expect(custom.computeHealthBackoff(1)).To(Equal(5 * time.Second))
+			Expect(custom.computeHealthBackoff(2)).To(Equal(10 * time.Second))
+			Expect(custom.computeHealthBackoff(3)).To(Equal(20 * time.Second))
+			Expect(custom.computeHealthBackoff(4)).To(Equal(30 * time.Second)) // would be 40s, capped
+			Expect(custom.computeHealthBackoff(100)).To(Equal(30 * time.Second))
 		})
 	})
 
